@@ -67,7 +67,7 @@ def find_jobs(profession, city):
     """Same scrape as v1: Indeed + Naukri, 72h, dedupe, top 15."""
     try:
         jobs = scrape_jobs(
-            site_name=["indeed", "naukri"],
+            site_name=["indeed", "naukri", "google", "linkedin", "glassdoor"],
             search_term=profession,
             location=city,
             results_wanted=10,

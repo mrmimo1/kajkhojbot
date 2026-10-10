@@ -3,6 +3,14 @@ on:
   schedule:
     - cron: "30 2 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "digest or today"
+        required: false
+        default: "digest"
+concurrency:
+  group: kajkhoj-${{ github.event.inputs.mode || 'digest' }}
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -15,4 +23,6 @@ jobs:
       - run: python main.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MODE: ${{ github.event.inputs.mode || 'digest' }}

@@ -3,7 +3,7 @@ import time
 import requests
 import pandas as pd
 from jobspy import scrape_jobs
-from kajkhoj_filter import score_job
+from kajkhoj_filter import score_job, valid_preferences
 import re
 
 FRIENDLY_ERROR = "Ektu jhamela hocche 🙏 Ektu pore abar try koro."
@@ -115,48 +115,78 @@ def row_to_job(row):
             "remote_eligibility": eligibility}
 
 
-def find_jobs(profession, city):
-    """Preserve five-source/72h scrape; filter before choosing up to 15 alerts.
-    None = failed scrape/schema, [] = successful scrape with no strong matches.
-    The search city is NOT proof of a job's actual location.
+def freelance_signal(row):
+    """Require listing evidence, not just the freelance search query.
+    Contract/temp alone is NOT proof of a client freelance project.
     """
-    try:
-        jobs = scrape_jobs(
-            site_name=["indeed", "naukri", "google", "linkedin", "glassdoor"],
-            search_term=profession,
-            location=city,
-            results_wanted=10,
-            hours_old=72,
-            country_indeed="India",
-        )
-        if jobs is None:
-            return None
-        if len(jobs) == 0:
-            return []
-        if "job_url" not in jobs.columns or "title" not in jobs.columns:
-            return None
-        df = jobs.drop_duplicates(subset=["job_url"])
-        result = []
-        for _, row in df.iterrows():
-            job = row_to_job(row)
-            if not score_job(job).strong:
-                continue
-            url = field(row, "job_url")
-            # Keep the actual provider URL; never fabricate missing destinations.
-            if not re.match(r"^https?://[^\s]+$", url):
-                continue
-            company = field(row, "company") or "Company not listed"
-            result.append(f"* {job['title']} @ {company}\n{url}")
-            if len(result) == 15:
-                break
-        return result
-    except Exception as e:
-        print("scrape failed:", type(e).__name__)
-        return None
+    title = field(row, "title")
+    job_type = field(row, "job_type")
+    description = field(row, "description")
+    if re.search(r"\b(?:freelance|freelancer|freelancing|gig)\b", title + " " + job_type, re.I):
+        return True
+    return bool(re.search(
+        r"\b(?:seeking|hiring|looking for|need|needed)\s+(?:an?\s+)?freelanc(?:e|er)\b|\b(?:freelance position|freelance opportunity|freelance project)\b",
+        description, re.I))
 
 
-def build_message(lines):
-    return "Kajkhoj Bot - notun chakri:\n\n" + "\n\n".join(lines)
+def find_jobs(profession, city):
+    """Two cached search passes; evidence-filtered listings, no new platforms.
+    None means both scrapes failed. Partial results survive one failed pass.
+    """
+    base = re.sub(r"\b(?:freelance|freelancer|freelancing|gig|gigs|projects?)\b", "", profession, flags=re.I)
+    base = " ".join(base.split())
+    results = {"jobs": [], "freelance": [], "partial_failure": False}
+    seen = set()
+    successful = 0
+    for term in [base, base + " freelance"]:
+        try:
+            jobs = scrape_jobs(
+                site_name=["indeed", "naukri", "google", "linkedin", "glassdoor"],
+                search_term=term,
+                google_search_term=f"{term} jobs near {city} since 3 days ago",
+                location=city,
+                results_wanted=10,
+                hours_old=72,
+                country_indeed="India",
+            )
+            if jobs is None or (len(jobs) and ("job_url" not in jobs.columns or "title" not in jobs.columns)):
+                raise ValueError("scrape/schema unavailable")
+            successful += 1
+            if len(jobs):
+                for _, row in jobs.drop_duplicates(subset=["job_url"]).iterrows():
+                    job = row_to_job(row)
+                    if not score_job(job, profession, city).strong:
+                        continue
+                    url = field(row, "job_url")
+                    if not re.match(r"^https?://[^\s]+$", url) or url in seen:
+                        continue
+                    kind = "freelance" if freelance_signal(row) else "jobs"
+                    # Extra pass must not turn non-freelance results into more ordinary alerts.
+                    if term != base and kind != "freelance":
+                        continue
+                    limit = 5 if kind == "freelance" else 15
+                    if len(results[kind]) >= limit:
+                        continue
+                    company = field(row, "company") or "Company not listed"
+                    prefix = "Freelance: " if kind == "freelance" else ""
+                    results[kind].append(f"* {prefix}{job['title']} @ {company}\n{url}")
+                    seen.add(url)
+        except Exception as e:
+            results["partial_failure"] = True
+            print("scrape failed:", type(e).__name__)
+        time.sleep(2)
+    return results if successful else None
+
+
+def build_message(result):
+    sections = []
+    if result["jobs"]:
+        sections.append("Kajkhoj Bot - notun chakri:\n\n" + "\n\n".join(result["jobs"]))
+    if result["freelance"]:
+        sections.append("Freelance / gig leads - original post link:\n\n" + "\n\n".join(result["freelance"]))
+    if result["partial_failure"]:
+        sections.append("Ekta source search e jhamela hoyeche; paoa matching post gulo dilam. Aro result thakte pare.")
+    return "\n\n".join(sections)
 
 
 def send_long(chat_id, msg):
@@ -182,8 +212,8 @@ def main():
         profession = (u.get("profession") or "").strip()
         city = (u.get("city") or "").strip()
 
-        if not profession or not city:
-            status = send(chat_id, "Age /keywords diye apnar job type ar city set korun. Example: /keywords digital marketing Kolkata")
+        if not valid_preferences(profession, city):
+            status = send(chat_id, "/keywords diye specific job type ar city din. Example: /keywords graphic designer Mumbai. Sudhu marketing ba manager likhle strong match bojha jay na.")
             if status == 403:
                 delete_user(chat_id)
             elif MODE == "today":
@@ -193,7 +223,6 @@ def main():
         key = (profession.lower(), city.lower())
         if key not in cache:
             cache[key] = find_jobs(profession, city)
-            time.sleep(2)
         lines = cache[key]
 
         if lines is None:
@@ -205,8 +234,15 @@ def main():
             skipped += 1
             continue
 
-        if not lines:
+        if not lines["jobs"] and not lines["freelance"]:
             skipped += 1
+            if lines["partial_failure"]:
+                status = send(chat_id, FRIENDLY_ERROR)
+                if status == 403:
+                    delete_user(chat_id)
+                elif MODE == "today":
+                    clear_today_flag(chat_id)
+                continue
             if MODE == "today":
                 status = send(chat_id, "Kajkhoj Bot: ekhon kono notun matching job paini, pore abar dekhbo.")
                 if status == 403:

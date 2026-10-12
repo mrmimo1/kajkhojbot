@@ -5,6 +5,7 @@ import pandas as pd
 from jobspy import scrape_jobs
 from kajkhoj_filter import score_job, valid_preferences
 import re
+from kajkhoj_ai import configured, explain
 
 FRIENDLY_ERROR = "Ektu jhamela hocche 🙏 Ektu pore abar try koro."
 
@@ -43,7 +44,7 @@ def send(chat_id, msg):
 
 
 def get_users():
-    q = "select=chat_id,profession,city"
+    q = "select=chat_id,profession,city,ai_enabled"
     if MODE == "today":
         q += "&today_requested=eq.true"
     r = requests.get(f"{SUPABASE_URL}/rest/v1/users?{q}", headers=DB_HEADERS, timeout=30)
@@ -53,6 +54,10 @@ def get_users():
 
 def delete_user(chat_id):
     try:
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/kajkhoj_ai_usage?chat_id=eq.{chat_id}",
+            headers=DB_HEADERS, timeout=30,
+        )
         requests.delete(
             f"{SUPABASE_URL}/rest/v1/users?chat_id=eq.{chat_id}",
             headers=DB_HEADERS,
@@ -129,13 +134,40 @@ def freelance_signal(row):
         description, re.I))
 
 
+def posted_salary(row):
+    low = field(row, "min_amount"); high = field(row, "max_amount")
+    currency = field(row, "currency"); interval = field(row, "interval")
+    # Never convert annual/monthly, infer currency or invent an absent range.
+    if (not low and not high) or not currency or not interval:
+        return "Salary: not listed with clear currency/period"
+    return "Posted salary: " + currency + " " + (low + "-" + high if low and high else low or high) + " / " + interval
+
+
+def add_ai_reason(result, user):
+    import copy
+    if user.get('ai_enabled') is not True or not configured() or not result.get('ai_posts'):
+        return result
+    try:
+        r=requests.post(SUPABASE_URL+'/rest/v1/rpc/kajkhoj_ai_claim',headers=DB_HEADERS,json={'p_chat_id':user['chat_id']},timeout=10)
+        r.raise_for_status()
+        if r.json() is not True:return result
+        posts=result['ai_posts']
+        reasons=explain(user['profession'],[{'title':x['title'],'description':x['description']} for x in posts])
+        if not reasons:return result
+        updated=copy.deepcopy(result) # never leak consented AI output to cached non-AI user
+        for post,reason in zip(posts,reasons):
+            updated[post['kind']][post['index']] += '\nAI title-match note (check requirements): '+reason
+        return updated
+    except Exception:return result
+
+
 def find_jobs(profession, city):
     """Two cached search passes; evidence-filtered listings, no new platforms.
     None means both scrapes failed. Partial results survive one failed pass.
     """
     base = re.sub(r"\b(?:freelance|freelancer|freelancing|gig|gigs|projects?)\b", "", profession, flags=re.I)
     base = " ".join(base.split())
-    results = {"jobs": [], "freelance": [], "partial_failure": False}
+    results = {"jobs": [], "freelance": [], "partial_failure": False, "ai_posts": []}
     seen = set()
     successful = 0
     for term in [base, base + " freelance"]:
@@ -169,7 +201,11 @@ def find_jobs(profession, city):
                         continue
                     company = field(row, "company") or "Company not listed"
                     prefix = "Freelance: " if kind == "freelance" else ""
-                    results[kind].append(f"* {prefix}{job['title']} @ {company}\n{url}")
+                    salary = posted_salary(row)
+                    result_index = len(results[kind])
+                    results[kind].append(f"* {prefix}{job['title']} @ {company}\n{salary}\n{url}")
+                    if len(results['ai_posts'])<3:
+                        results['ai_posts'].append({'kind':kind,'index':result_index,'title':job['title'][:180],'description':job['description'][:600]})
                     seen.add(url)
         except Exception as e:
             results["partial_failure"] = True
@@ -251,6 +287,7 @@ def main():
                     clear_today_flag(chat_id)
             continue
 
+        lines = add_ai_reason(lines, u)
         status = send_long(chat_id, build_message(lines))
         if status == 403:
             delete_user(chat_id)

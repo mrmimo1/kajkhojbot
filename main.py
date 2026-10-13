@@ -5,9 +5,8 @@ import pandas as pd
 from jobspy import scrape_jobs
 from kajkhoj_filter import score_job, valid_preferences
 import re
+from kajkhoj_language import text, normalize_language
 from kajkhoj_ai import configured, explain
-
-FRIENDLY_ERROR = "Ektu jhamela hocche 🙏 Ektu pore abar try koro."
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -44,7 +43,7 @@ def send(chat_id, msg):
 
 
 def get_users():
-    q = "select=chat_id,profession,city,ai_enabled"
+    q = "select=chat_id,profession,city,ai_enabled,language"
     if MODE == "today":
         q += "&today_requested=eq.true"
     r = requests.get(f"{SUPABASE_URL}/rest/v1/users?{q}", headers=DB_HEADERS, timeout=30)
@@ -134,13 +133,13 @@ def freelance_signal(row):
         description, re.I))
 
 
-def posted_salary(row):
+def posted_salary(row, language="banglish"):
     low = field(row, "min_amount"); high = field(row, "max_amount")
     currency = field(row, "currency"); interval = field(row, "interval")
     # Never convert annual/monthly, infer currency or invent an absent range.
     if (not low and not high) or not currency or not interval:
-        return "Salary: not listed with clear currency/period"
-    return "Posted salary: " + currency + " " + (low + "-" + high if low and high else low or high) + " / " + interval
+        return text("salary_missing", language)
+    return text("salary", language) + currency + " " + (low + "-" + high if low and high else low or high) + " / " + interval
 
 
 def add_ai_reason(result, user):
@@ -152,11 +151,11 @@ def add_ai_reason(result, user):
         r.raise_for_status()
         if r.json() is not True:return result
         posts=result['ai_posts']
-        reasons=explain(user['profession'],[{'title':x['title'],'description':x['description']} for x in posts])
+        reasons=explain(user['profession'],[{'title':x['title'],'description':x['description']} for x in posts], language=normalize_language(user.get('language')))
         if not reasons:return result
         updated=copy.deepcopy(result) # never leak consented AI output to cached non-AI user
         for post,reason in zip(posts,reasons):
-            updated[post['kind']][post['index']] += '\nAI title-match note (check requirements): '+reason
+            updated[post['kind']][post['index']]['ai_reason'] = reason
         return updated
     except Exception:return result
 
@@ -199,11 +198,12 @@ def find_jobs(profession, city):
                     limit = 5 if kind == "freelance" else 15
                     if len(results[kind]) >= limit:
                         continue
-                    company = field(row, "company") or "Company not listed"
-                    prefix = "Freelance: " if kind == "freelance" else ""
-                    salary = posted_salary(row)
                     result_index = len(results[kind])
-                    results[kind].append(f"* {prefix}{job['title']} @ {company}\n{salary}\n{url}")
+                    # Cache only listing facts; render labels separately for each user's language.
+                    results[kind].append({"title": job["title"], "company": field(row, "company"),
+                                          "salary_row": {name: field(row, name) for name in
+                                                         ("min_amount", "max_amount", "currency", "interval")},
+                                          "url": url})
                     if len(results['ai_posts'])<3:
                         results['ai_posts'].append({'kind':kind,'index':result_index,'title':job['title'][:180],'description':job['description'][:600]})
                     seen.add(url)
@@ -214,14 +214,21 @@ def find_jobs(profession, city):
     return results if successful else None
 
 
-def build_message(result):
+def build_message(result, language="banglish"):
+    language = normalize_language(language)
     sections = []
-    if result["jobs"]:
-        sections.append("Kajkhoj Bot - notun chakri:\n\n" + "\n\n".join(result["jobs"]))
-    if result["freelance"]:
-        sections.append("Freelance / gig leads - original post link:\n\n" + "\n\n".join(result["freelance"]))
+    for kind in ("jobs", "freelance"):
+        entries = []
+        for post in result[kind]:
+            company = post["company"] or text("company_missing", language)
+            line = f"* {post['title']} @ {company}\n{posted_salary(post['salary_row'], language)}\n{post['url']}"
+            if post.get("ai_reason"):
+                line += "\n" + text("ai_note", language) + post["ai_reason"]
+            entries.append(line)
+        if entries:
+            sections.append(text(kind, language) + "\n\n" + "\n\n".join(entries))
     if result["partial_failure"]:
-        sections.append("Ekta source search e jhamela hoyeche; paoa matching post gulo dilam. Aro result thakte pare.")
+        sections.append(text("partial", language))
     return "\n\n".join(sections)
 
 
@@ -245,11 +252,12 @@ def main():
 
     for u in users:
         chat_id = u.get("chat_id")
+        language = normalize_language(u.get("language"))
         profession = (u.get("profession") or "").strip()
         city = (u.get("city") or "").strip()
 
         if not valid_preferences(profession, city):
-            status = send(chat_id, "/keywords diye specific job type ar city din. Example: /keywords graphic designer Mumbai. Sudhu marketing ba manager likhle strong match bojha jay na.")
+            status = send(chat_id, text("preferences", language))
             if status == 403:
                 delete_user(chat_id)
             elif MODE == "today":
@@ -262,7 +270,7 @@ def main():
         lines = cache[key]
 
         if lines is None:
-            status = send(chat_id, FRIENDLY_ERROR) # one attempt only
+            status = send(chat_id, text("error", language)) # one attempt only
             if status == 403:
                 delete_user(chat_id)
             elif MODE == "today":
@@ -273,14 +281,14 @@ def main():
         if not lines["jobs"] and not lines["freelance"]:
             skipped += 1
             if lines["partial_failure"]:
-                status = send(chat_id, FRIENDLY_ERROR)
+                status = send(chat_id, text("error", language))
                 if status == 403:
                     delete_user(chat_id)
                 elif MODE == "today":
                     clear_today_flag(chat_id)
                 continue
             if MODE == "today":
-                status = send(chat_id, "Kajkhoj Bot: ekhon kono notun matching job paini, pore abar dekhbo.")
+                status = send(chat_id, text("empty", language))
                 if status == 403:
                     delete_user(chat_id)
                 else:
@@ -288,7 +296,7 @@ def main():
             continue
 
         lines = add_ai_reason(lines, u)
-        status = send_long(chat_id, build_message(lines))
+        status = send_long(chat_id, build_message(lines, language))
         if status == 403:
             delete_user(chat_id)
         else:

@@ -6,12 +6,20 @@ from jobspy import scrape_jobs
 from kajkhoj_filter import score_job, valid_preferences
 import re
 from kajkhoj_language import text, normalize_language
-from kajkhoj_ai import configured, explain
+from kajkhoj_ai import configured, explain, detail_cards
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 MODE = os.environ.get("MODE", "digest").strip() or "digest"
+
+# Detail-card guardrails (free tier): short descriptions keep the normal format,
+# at most DETAIL_MAX_PER_USER cards per digest, and a run-wide AI call budget so a
+# big user list can never drain the shared free quota in one run.
+DETAIL_MIN_CHARS = 200       # description shorter than this = no card, normal format
+DETAIL_DESC_CHARS = 1200     # max description text sent to AI per posting
+DETAIL_MAX_PER_USER = 5      # detailed cards per digest; the rest stay normal format
+DETAIL_MAX_CALLS_PER_RUN = 12  # AI card calls per whole run across all users/languages
 
 DB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -160,6 +168,56 @@ def add_ai_reason(result, user):
     except Exception:return result
 
 
+def add_detail_cards(result, user, budget):
+    """Attach AI detail cards (wants/fit) to jobs whose scraped description has
+    usable detail. Cards are generated once per (profession, city) + language and
+    reused for later users from the shared run cache; the run-wide budget caps AI
+    calls. Any failure silently keeps the normal one-line format."""
+    import copy
+    language = normalize_language(user.get('language'))
+    if not configured():
+        return result
+    posts = []
+    for kind in ("jobs", "freelance"):
+        for i, post in enumerate(result[kind]):
+            if len(post.get('description') or '') >= DETAIL_MIN_CHARS:
+                posts.append({'kind': kind, 'index': i, 'title': post['title'],
+                              'company': post.get('company') or '',
+                              'description': (post.get('description') or '')[:DETAIL_DESC_CHARS]})
+        if len(posts) >= DETAIL_MAX_PER_USER:
+            posts = posts[:DETAIL_MAX_PER_USER]
+            break
+    if not posts:
+        return result
+    cards_by_lang = result.setdefault('detail_cards', {})
+    cards = cards_by_lang.get(language)
+    if cards is None:
+        if budget[0] <= 0:
+            return result
+        budget[0] -= 1
+        try:
+            generated = detail_cards(user['profession'],
+                                     [{'title': p['title'], 'company': p['company'],
+                                       'description': p['description']} for p in posts],
+                                     language=language)
+        except Exception:
+            generated = None
+        if not generated:
+            cards_by_lang[language] = {}  # one failed call must not retry for every later user
+            return result
+        cards = {}
+        for p, card in zip(posts, generated):
+            if card:
+                cards[(p['kind'], p['index'])] = card
+        cards_by_lang[language] = cards
+    if not cards:
+        return result
+    updated = copy.deepcopy(result)  # cards are per-user rendering; the cache keeps raw listings
+    for (kind, index), card in cards.items():
+        updated[kind][index]['card'] = card
+    return updated
+
+
 def find_jobs(profession, city):
     """Two cached search passes; evidence-filtered listings, no new platforms.
     None means both scrapes failed. Partial results survive one failed pass.
@@ -201,6 +259,8 @@ def find_jobs(profession, city):
                     result_index = len(results[kind])
                     # Cache only listing facts; render labels separately for each user's language.
                     results[kind].append({"title": job["title"], "company": field(row, "company"),
+                                          "location": job["location"],
+                                          "description": job["description"][:DETAIL_DESC_CHARS],
                                           "salary_row": {name: field(row, name) for name in
                                                          ("min_amount", "max_amount", "currency", "interval")},
                                           "url": url})
@@ -221,7 +281,19 @@ def build_message(result, language="banglish"):
         entries = []
         for post in result[kind]:
             company = post["company"] or text("company_missing", language)
-            line = f"* {post['title']} @ {company}\n{posted_salary(post['salary_row'], language)}\n{post['url']}"
+            salary = posted_salary(post["salary_row"], language)
+            card = post.get("card")
+            if card:
+                lines = [f"* {post['title']} @ {company}"]
+                if post.get("location"):
+                    lines.append(text("card_location", language) + post["location"])
+                lines.append(salary)
+                lines.append(text("card_wants", language) + card["wants"])
+                lines.append(text("card_fit", language) + card["fit"])
+                lines.append(post["url"])
+                entries.append("\n".join(lines))
+                continue
+            line = f"* {post['title']} @ {company}\n{salary}\n{post['url']}"
             if post.get("ai_reason"):
                 line += "\n" + text("ai_note", language) + post["ai_reason"]
             entries.append(line)
@@ -247,6 +319,7 @@ def main():
     users = get_users()
     print("mode:", MODE, "| users:", len(users))
     cache = {}
+    detail_budget = [DETAIL_MAX_CALLS_PER_RUN]
     sent = 0
     skipped = 0
 
@@ -295,6 +368,7 @@ def main():
                     clear_today_flag(chat_id)
             continue
 
+        lines = add_detail_cards(lines, u, detail_budget)
         lines = add_ai_reason(lines, u)
         status = send_long(chat_id, build_message(lines, language))
         if status == 403:

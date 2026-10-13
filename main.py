@@ -176,6 +176,7 @@ def add_detail_cards(result, user, budget):
     import copy
     language = normalize_language(user.get('language'))
     if not configured():
+        print("detail cards: no AI provider configured; using normal format")
         return result
     posts = []
     for kind in ("jobs", "freelance"):
@@ -187,12 +188,14 @@ def add_detail_cards(result, user, budget):
         if len(posts) >= DETAIL_MAX_PER_USER:
             posts = posts[:DETAIL_MAX_PER_USER]
             break
+    print("detail cards: eligible postings:", len(posts))
     if not posts:
         return result
     cards_by_lang = result.setdefault('detail_cards', {})
     cards = cards_by_lang.get(language)
     if cards is None:
         if budget[0] <= 0:
+            print("detail cards: run budget exhausted; using normal format")
             return result
         budget[0] -= 1
         try:
@@ -203,12 +206,14 @@ def add_detail_cards(result, user, budget):
         except Exception:
             generated = None
         if not generated:
+            print("detail cards: AI returned no valid cards; using normal format")
             cards_by_lang[language] = {}  # one failed call must not retry for every later user
             return result
         cards = {}
         for p, card in zip(posts, generated):
             if card:
                 cards[(p['kind'], p['index'])] = card
+        print("detail cards: generated:", len(cards))
         cards_by_lang[language] = cards
     if not cards:
         return result
@@ -237,6 +242,7 @@ def find_jobs(profession, city):
                 results_wanted=10,
                 hours_old=72,
                 country_indeed="India",
+                fetch_description=True,  # LinkedIn search cards omit descriptions by default.
             )
             if jobs is None or (len(jobs) and ("job_url" not in jobs.columns or "title" not in jobs.columns)):
                 raise ValueError("scrape/schema unavailable")

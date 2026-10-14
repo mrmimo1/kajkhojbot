@@ -5,6 +5,11 @@ LANGUAGES = {"banglish": "simple Banglish (Bengali + English, Latin letters)",
 
 TEXT = {
  "banglish": {
+  "safety_tip": "Shabdhan: apply korar age company-r website/LinkedIn dekhe nio. Keu paisa (fee/deposit) chaile apply koro na. Amra kono job genuine bolchi na, shudhu sondehojanok lakkhon dekhale janai.",
+  "warn_fee": "⚠️ Post-e fee/deposit-er kotha ache. Paisa dite hole apply koro na.",
+  "warn_chat": "⚠️ WhatsApp/Telegram-e jogajog korte bola hoyeche. Company age check kore nio.",
+  "warn_freemail": "⚠️ Gmail/Yahoo-r moto free email deoa ache. Company age check kore nio.",
+  "warn_income": "⚠️ \"Guaranteed income\" er moto kotha ache. Bhalo kore check kore nio.",
   "error": "Ektu jhamela hocche 🙏 Ektu pore abar try koro.",
   "preferences": "/keywords diye specific job type ar city dao. Example: /keywords graphic designer Mumbai. Sudhu marketing ba manager likhle strong match bojha jay na.",
   "empty": "KajKhoj: ekhon notun matching job paini. Pore abar dekho.",
@@ -20,6 +25,11 @@ TEXT = {
   "card_fit": "Keno tomar jonno match: ",
  },
  "english": {
+  "safety_tip": "Stay safe: check the company's website or LinkedIn before you apply. Never pay a fee or deposit to get a job. We are not saying any job is genuine. We only point out warning signs we can see.",
+  "warn_fee": "⚠️ This post mentions a fee or deposit. Do not apply if you have to pay.",
+  "warn_chat": "⚠️ This post asks you to contact on WhatsApp/Telegram. Check the company first.",
+  "warn_freemail": "⚠️ This post lists a free email like Gmail or Yahoo. Check the company first.",
+  "warn_income": "⚠️ This post promises guaranteed income or similar. Check it carefully.",
   "error": "Something went wrong 🙏 Please try again in a little while.",
   "preferences": "Use /keywords with a specific job type and city. Example: /keywords graphic designer Mumbai. A broad word like marketing or manager is not enough for a clear match.",
   "empty": "KajKhoj: no new matching jobs right now. Check again later.",
@@ -35,6 +45,11 @@ TEXT = {
   "card_fit": "Why it fits you: ",
  },
  "hinglish": {
+  "safety_tip": "Savdhaan: apply karne se pehle company ki website ya LinkedIn dekh lo. Job ke liye kabhi fee ya deposit mat do. Hum kisi job ko genuine nahi bol rahe, sirf jo warning signs dikhte hain woh batate hain.",
+  "warn_fee": "⚠️ Is post mein fee ya deposit ka zikr hai. Paise dene pade to apply mat karo.",
+  "warn_chat": "⚠️ Is post mein WhatsApp/Telegram par contact karne ko kaha hai. Pehle company check kar lo.",
+  "warn_freemail": "⚠️ Gmail/Yahoo jaisi free email di gayi hai. Pehle company check kar lo.",
+  "warn_income": "⚠️ Is post mein guaranteed income jaisi baat hai. Achhe se check kar lo.",
   "error": "Thodi dikkat aa rahi hai 🙏 Thodi der baad phir try karo.",
   "preferences": "/keywords mein specific job type aur city likho. Example: /keywords graphic designer Mumbai. Sirf marketing ya manager se clear match samajhna mushkil hai.",
   "empty": "KajKhoj: abhi koi nayi matching job nahi mili. Baad mein phir dekho.",

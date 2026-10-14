@@ -18,9 +18,9 @@ MODE = os.environ.get("MODE", "digest").strip() or "digest"
 # Detail-card guardrails (free tier): short descriptions keep the normal format,
 # at most DETAIL_MAX_PER_USER cards per digest, and a run-wide AI call budget so a
 # big user list can never drain the shared free quota in one run.
-DETAIL_MIN_CHARS = 200       # description shorter than this = no card, normal format
+DETAIL_MIN_CHARS = 120       # description shorter than this = no card, normal format
 DETAIL_DESC_CHARS = 1200     # max description text sent to AI per posting
-DETAIL_MAX_PER_USER = 5      # detailed cards per digest; the rest stay normal format
+DETAIL_MAX_PER_USER = 8      # detailed cards per digest; the rest stay normal format
 DETAIL_MAX_CALLS_PER_RUN = 12  # AI card calls per whole run across all users/languages
 
 DB_HEADERS = {
@@ -304,7 +304,9 @@ def build_message(result, language="banglish"):
                 lines.append(post["url"])
                 entries.append("\n".join(lines))
                 continue
-            line = f"* {post['title']} @ {company}\n{salary}\n" + "".join(w + "\n" for w in warns) + post['url']
+            # Fallback (no AI card): still show where the job is, from the listing itself.
+            loc = (text("card_location", language) + post["location"] + "\n") if post.get("location") else ""
+            line = f"* {post['title']} @ {company}\n{loc}{salary}\n" + "".join(w + "\n" for w in warns) + post['url']
             if post.get("ai_reason"):
                 line += "\n" + text("ai_note", language) + post["ai_reason"]
             entries.append(line)

@@ -5,6 +5,8 @@ LANGUAGES = {"banglish": "simple Banglish (Bengali + English, Latin letters)",
 
 TEXT = {
  "banglish": {
+  "btn_applied": "✅ Applied korechi",
+  "btn_not_interested": "🚫 Pochhondo noy",
   "safety_tip": "Shabdhan: apply korar age company-r website/LinkedIn dekhe nio. Keu paisa (fee/deposit) chaile apply koro na. Amra kono job genuine bolchi na, shudhu sondehojanok lakkhon dekhale janai.",
   "warn_fee": "⚠️ Post-e fee/deposit-er kotha ache. Paisa dite hole apply koro na.",
   "warn_chat": "⚠️ WhatsApp/Telegram-e jogajog korte bola hoyeche. Company age check kore nio.",
@@ -25,6 +27,8 @@ TEXT = {
   "card_fit": "Keno tomar jonno match: ",
  },
  "english": {
+  "btn_applied": "✅ I applied",
+  "btn_not_interested": "🚫 Not interested",
   "safety_tip": "Stay safe: check the company's website or LinkedIn before you apply. Never pay a fee or deposit to get a job. We are not saying any job is genuine. We only point out warning signs we can see.",
   "warn_fee": "⚠️ This post mentions a fee or deposit. Do not apply if you have to pay.",
   "warn_chat": "⚠️ This post asks you to contact on WhatsApp/Telegram. Check the company first.",
@@ -45,6 +49,8 @@ TEXT = {
   "card_fit": "Why it fits you: ",
  },
  "hinglish": {
+  "btn_applied": "✅ Apply kar diya",
+  "btn_not_interested": "🚫 Interested nahi",
   "safety_tip": "Savdhaan: apply karne se pehle company ki website ya LinkedIn dekh lo. Job ke liye kabhi fee ya deposit mat do. Hum kisi job ko genuine nahi bol rahe, sirf jo warning signs dikhte hain woh batate hain.",
   "warn_fee": "⚠️ Is post mein fee ya deposit ka zikr hai. Paise dene pade to apply mat karo.",
   "warn_chat": "⚠️ Is post mein WhatsApp/Telegram par contact karne ko kaha hai. Pehle company check kar lo.",

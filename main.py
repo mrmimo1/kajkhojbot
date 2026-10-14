@@ -10,6 +10,7 @@ from kajkhoj_language import text, normalize_language
 from kajkhoj_ai import configured, explain, detail_cards
 import kajkhoj_sent
 import kajkhoj_tracker
+import kajkhoj_followup
 from kajkhoj_safety import warning_reasons
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -506,6 +507,12 @@ def main():
             if MODE == "today":
                 clear_today_flag(chat_id)
 
+    if MODE == "digest":
+        langs = {x.get("chat_id"): normalize_language(x.get("language")) for x in users}
+        try:
+            kajkhoj_followup.run(requests, SUPABASE_URL, DB_HEADERS, send, text, langs, delete_user)
+        except Exception as e:
+            print("followup failed:", type(e).__name__)
     print("Done! sent:", sent, "| skipped (0 jobs):", skipped)
 
 

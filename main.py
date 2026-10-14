@@ -8,6 +8,7 @@ import re
 from kajkhoj_language import text, normalize_language
 from kajkhoj_ai import configured, explain, detail_cards
 import kajkhoj_sent
+import kajkhoj_tracker
 from kajkhoj_safety import warning_reasons
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -30,16 +31,23 @@ DB_HEADERS = {
 }
 
 
-def send(chat_id, msg):
+def send(chat_id, msg, markup=None, _retry=True):
     """Send one Telegram message. Returns the HTTP status (0 on network error).
-    Never prints the token or the chat id."""
+    Never prints the token or the chat id. markup = optional inline buttons.
+    A 429 (rate limit) means nothing was sent, so waiting and retrying once is safe."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    body = {"chat_id": chat_id, "text": msg, "disable_web_page_preview": True}
+    if markup:
+        body["reply_markup"] = markup
     try:
-        r = requests.post(
-            url,
-            json={"chat_id": chat_id, "text": msg, "disable_web_page_preview": True},
-            timeout=30,
-        )
+        r = requests.post(url, json=body, timeout=30)
+        if r.status_code == 429 and _retry:
+            try:
+                wait = int(r.json().get("parameters", {}).get("retry_after", 2))
+            except Exception:
+                wait = 2
+            time.sleep(min(max(wait, 1), 30))
+            return send(chat_id, msg, markup, _retry=False)
         if r.status_code == 200:
             # A malformed response may conceal a successful send. Status 0 is ambiguous.
             try:
@@ -68,6 +76,7 @@ def delete_user(chat_id):
             headers=DB_HEADERS, timeout=30,
         )
         kajkhoj_sent.forget_user(requests, SUPABASE_URL, DB_HEADERS, chat_id)
+        kajkhoj_tracker.forget_user(requests, SUPABASE_URL, DB_HEADERS, chat_id)
         requests.delete(
             f"{SUPABASE_URL}/rest/v1/users?chat_id=eq.{chat_id}",
             headers=DB_HEADERS,
@@ -283,39 +292,77 @@ def find_jobs(profession, city):
     return results if successful else None
 
 
+def render_entry(post, language):
+    """Text of one job message."""
+    company = post["company"] or text("company_missing", language)
+    salary = posted_salary(post["salary_row"], language)
+    card = post.get("card")
+    warns = [text("warn_" + w, language) for w in warning_reasons(post)[:2]]
+    if card:
+        lines = [f"* {post['title']} @ {company}"]
+        if post.get("location"):
+            lines.append(text("card_location", language) + post["location"])
+        lines.append(salary)
+        lines.append(text("card_wants", language) + card["wants"])
+        lines.append(text("card_fit", language) + card["fit"])
+        lines.extend(warns)
+        lines.append(post["url"])
+        return "\n".join(lines)
+    # Fallback (no AI card): still show where the job is, from the listing itself.
+    loc = (text("card_location", language) + post["location"] + "\n") if post.get("location") else ""
+    line = f"* {post['title']} @ {company}\n{loc}{salary}\n" + "".join(w + "\n" for w in warns) + post['url']
+    if post.get("ai_reason"):
+        line += "\n" + text("ai_note", language) + post["ai_reason"]
+    return line
+
+
+def footer_text(result, language):
+    parts = []
+    if result["partial_failure"]:
+        parts.append(text("partial", language))
+    parts.append(text("safety_tip", language))
+    return "\n\n".join(parts)
+
+
+def send_digest(chat_id, result, language):
+    """One header per section, then ONE MESSAGE PER JOB with Applied / Not interested
+    buttons, then the safety footer. Returns (status, delivered) where delivered is
+    {"jobs": [...], "freelance": [...]} of jobs whose message Telegram accepted.
+    Stops at the first failed send (403 = user blocked the bot)."""
+    language = normalize_language(language)
+    delivered = {"jobs": [], "freelance": []}
+    all_posts = [p for kind in ("jobs", "freelance") for p in result[kind]]
+    ids = kajkhoj_tracker.register(requests, SUPABASE_URL, DB_HEADERS, chat_id, all_posts)
+    status = 200
+    for kind in ("jobs", "freelance"):
+        if not result[kind]:
+            continue
+        status = send(chat_id, text(kind, language))
+        if status != 200:
+            return status, delivered
+        for post in result[kind]:
+            time.sleep(0.3)
+            row_id = ids.get(post["url"])
+            markup = kajkhoj_tracker.keyboard(row_id, text, language) if row_id else None
+            status = send(chat_id, render_entry(post, language)[:4000], markup)
+            if status != 200:
+                return status, delivered
+            delivered[kind].append(post)
+    time.sleep(0.3)
+    status = send(chat_id, footer_text(result, language))
+    return status, delivered
+
+
 def build_message(result, language="banglish"):
+    """Whole digest as one text (kept for checks; the bot itself uses send_digest)."""
     language = normalize_language(language)
     sections = []
     for kind in ("jobs", "freelance"):
-        entries = []
-        for post in result[kind]:
-            company = post["company"] or text("company_missing", language)
-            salary = posted_salary(post["salary_row"], language)
-            card = post.get("card")
-            warns = [text("warn_" + w, language) for w in warning_reasons(post)[:2]]
-            if card:
-                lines = [f"* {post['title']} @ {company}"]
-                if post.get("location"):
-                    lines.append(text("card_location", language) + post["location"])
-                lines.append(salary)
-                lines.append(text("card_wants", language) + card["wants"])
-                lines.append(text("card_fit", language) + card["fit"])
-                lines.extend(warns)
-                lines.append(post["url"])
-                entries.append("\n".join(lines))
-                continue
-            # Fallback (no AI card): still show where the job is, from the listing itself.
-            loc = (text("card_location", language) + post["location"] + "\n") if post.get("location") else ""
-            line = f"* {post['title']} @ {company}\n{loc}{salary}\n" + "".join(w + "\n" for w in warns) + post['url']
-            if post.get("ai_reason"):
-                line += "\n" + text("ai_note", language) + post["ai_reason"]
-            entries.append(line)
+        entries = [render_entry(post, language) for post in result[kind]]
         if entries:
             sections.append(text(kind, language) + "\n\n" + "\n\n".join(entries))
-    if result["partial_failure"]:
-        sections.append(text("partial", language))
     if sections:
-        sections.append(text("safety_tip", language))
+        sections.append(footer_text(result, language))
     return "\n\n".join(sections)
 
 
@@ -338,6 +385,7 @@ def main():
     sent = 0
     skipped = 0
     kajkhoj_sent.cleanup_old(requests, SUPABASE_URL, DB_HEADERS)
+    kajkhoj_tracker.cleanup_old(requests, SUPABASE_URL, DB_HEADERS)
 
     for u in users:
         chat_id = u.get("chat_id")
@@ -361,6 +409,9 @@ def main():
         if lines is not None:
             # Per-user: drop jobs this user already got (copy; the shared cache stays untouched).
             seen = kajkhoj_sent.load_seen(requests, SUPABASE_URL, DB_HEADERS, chat_id)
+            blocked = kajkhoj_tracker.blocked_keys(requests, SUPABASE_URL, DB_HEADERS, chat_id)
+            if seen is not None and blocked:
+                seen = seen | blocked  # Applied / Not interested jobs never come back
             lines = kajkhoj_sent.filter_new(lines, seen)
 
         if lines is None:
@@ -391,13 +442,15 @@ def main():
 
         lines = add_detail_cards(lines, u, detail_budget)
         lines = add_ai_reason(lines, u)
-        status = send_long(chat_id, build_message(lines, language))
+        status, delivered = send_digest(chat_id, lines, language)
+        if delivered["jobs"] or delivered["freelance"]:
+            # Remember exactly the jobs Telegram accepted, even if a later send failed.
+            kajkhoj_sent.mark_sent(requests, SUPABASE_URL, DB_HEADERS, chat_id, delivered)
         if status == 403:
             delete_user(chat_id)
         else:
             if status == 200:
                 sent += 1
-                kajkhoj_sent.mark_sent(requests, SUPABASE_URL, DB_HEADERS, chat_id, lines)
             else:
                 print("Telegram delivery incomplete; no retry. status:", status)
             if MODE == "today":

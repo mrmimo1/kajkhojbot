@@ -7,6 +7,7 @@ from kajkhoj_filter import score_job, valid_preferences
 import re
 from kajkhoj_language import text, normalize_language
 from kajkhoj_ai import configured, explain, detail_cards
+import kajkhoj_sent
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -65,6 +66,7 @@ def delete_user(chat_id):
             f"{SUPABASE_URL}/rest/v1/kajkhoj_ai_usage?chat_id=eq.{chat_id}",
             headers=DB_HEADERS, timeout=30,
         )
+        kajkhoj_sent.forget_user(requests, SUPABASE_URL, DB_HEADERS, chat_id)
         requests.delete(
             f"{SUPABASE_URL}/rest/v1/users?chat_id=eq.{chat_id}",
             headers=DB_HEADERS,
@@ -182,7 +184,7 @@ def add_detail_cards(result, user, budget):
     for kind in ("jobs", "freelance"):
         for i, post in enumerate(result[kind]):
             if len(post.get('description') or '') >= DETAIL_MIN_CHARS:
-                posts.append({'kind': kind, 'index': i, 'title': post['title'],
+                posts.append({'kind': kind, 'index': i, 'title': post['title'], 'url': post['url'],
                               'company': post.get('company') or '',
                               'description': (post.get('description') or '')[:DETAIL_DESC_CHARS]})
         if len(posts) >= DETAIL_MAX_PER_USER:
@@ -191,35 +193,35 @@ def add_detail_cards(result, user, budget):
     print("detail cards: eligible postings:", len(posts))
     if not posts:
         return result
-    cards_by_lang = result.setdefault('detail_cards', {})
-    cards = cards_by_lang.get(language)
-    if cards is None:
-        if budget[0] <= 0:
-            print("detail cards: run budget exhausted; using normal format")
-            return result
+    # Cards are cached per language and keyed by job link, so users who already
+    # got some jobs (and so have a shorter list) never get a card on the wrong job.
+    cards = result.setdefault('detail_cards', {}).setdefault(language, {})
+    missing = [p for p in posts if p['url'] not in cards]
+    if missing and budget[0] > 0:
         budget[0] -= 1
         try:
             generated = detail_cards(user['profession'],
                                      [{'title': p['title'], 'company': p['company'],
-                                       'description': p['description']} for p in posts],
+                                       'description': p['description']} for p in missing],
                                      language=language)
         except Exception:
             generated = None
         if not generated:
             print("detail cards: AI returned no valid cards; using normal format")
-            cards_by_lang[language] = {}  # one failed call must not retry for every later user
-            return result
-        cards = {}
-        for p, card in zip(posts, generated):
-            if card:
-                cards[(p['kind'], p['index'])] = card
-        print("detail cards: generated:", len(cards))
-        cards_by_lang[language] = cards
-    if not cards:
+            generated = [None] * len(missing)  # one failed call must not retry for every later user
+        for p, card in zip(missing, generated):
+            cards[p['url']] = card or None
+        print("detail cards: generated:", sum(1 for c in generated if c))
+    elif missing:
+        print("detail cards: run budget exhausted; using normal format")
+    chosen = {p['url']: cards[p['url']] for p in posts if cards.get(p['url'])}
+    if not chosen:
         return result
     updated = copy.deepcopy(result)  # cards are per-user rendering; the cache keeps raw listings
-    for (kind, index), card in cards.items():
-        updated[kind][index]['card'] = card
+    for kind in ("jobs", "freelance"):
+        for post in updated[kind]:
+            if post['url'] in chosen:
+                post['card'] = chosen[post['url']]
     return updated
 
 
@@ -328,6 +330,7 @@ def main():
     detail_budget = [DETAIL_MAX_CALLS_PER_RUN]
     sent = 0
     skipped = 0
+    kajkhoj_sent.cleanup_old(requests, SUPABASE_URL, DB_HEADERS)
 
     for u in users:
         chat_id = u.get("chat_id")
@@ -347,6 +350,11 @@ def main():
         if key not in cache:
             cache[key] = find_jobs(profession, city)
         lines = cache[key]
+        raw_had_jobs = bool(lines and (lines["jobs"] or lines["freelance"]))
+        if lines is not None:
+            # Per-user: drop jobs this user already got (copy; the shared cache stays untouched).
+            seen = kajkhoj_sent.load_seen(requests, SUPABASE_URL, DB_HEADERS, chat_id)
+            lines = kajkhoj_sent.filter_new(lines, seen)
 
         if lines is None:
             status = send(chat_id, text("error", language)) # one attempt only
@@ -359,7 +367,7 @@ def main():
 
         if not lines["jobs"] and not lines["freelance"]:
             skipped += 1
-            if lines["partial_failure"]:
+            if lines["partial_failure"] and not raw_had_jobs:
                 status = send(chat_id, text("error", language))
                 if status == 403:
                     delete_user(chat_id)
@@ -382,6 +390,7 @@ def main():
         else:
             if status == 200:
                 sent += 1
+                kajkhoj_sent.mark_sent(requests, SUPABASE_URL, DB_HEADERS, chat_id, lines)
             else:
                 print("Telegram delivery incomplete; no retry. status:", status)
             if MODE == "today":

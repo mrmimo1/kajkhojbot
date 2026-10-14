@@ -1,4 +1,5 @@
 import os
+import html
 import time
 import requests
 import pandas as pd
@@ -31,7 +32,7 @@ DB_HEADERS = {
 }
 
 
-def send(chat_id, msg, markup=None, _retry=True):
+def send(chat_id, msg, markup=None, _retry=True, html_mode=False):
     """Send one Telegram message. Returns the HTTP status (0 on network error).
     Never prints the token or the chat id. markup = optional inline buttons.
     A 429 (rate limit) means nothing was sent, so waiting and retrying once is safe."""
@@ -39,6 +40,8 @@ def send(chat_id, msg, markup=None, _retry=True):
     body = {"chat_id": chat_id, "text": msg, "disable_web_page_preview": True}
     if markup:
         body["reply_markup"] = markup
+    if html_mode:
+        body["parse_mode"] = "HTML"
     try:
         r = requests.post(url, json=body, timeout=30)
         if r.status_code == 429 and _retry:
@@ -47,7 +50,7 @@ def send(chat_id, msg, markup=None, _retry=True):
             except Exception:
                 wait = 2
             time.sleep(min(max(wait, 1), 30))
-            return send(chat_id, msg, markup, _retry=False)
+            return send(chat_id, msg, markup, _retry=False, html_mode=html_mode)
         if r.status_code == 200:
             # A malformed response may conceal a successful send. Status 0 is ambiguous.
             try:
@@ -292,7 +295,48 @@ def find_jobs(profession, city):
     return results if successful else None
 
 
-def render_entry(post, language):
+def _b(s):
+    """Bold one piece of text (escaped)."""
+    return "<b>" + html.escape(str(s), quote=False) + "</b>"
+
+
+def _e(s):
+    return html.escape(str(s), quote=False)
+
+
+def _salary_parts(row, language):
+    """(bold label, plain value) for the salary line, same logic as posted_salary."""
+    low = field(row, "min_amount"); high = field(row, "max_amount")
+    currency = field(row, "currency"); interval = field(row, "interval")
+    if (not low and not high) or not currency or not interval:
+        return text("salary_missing", language), ""
+    return text("salary", language).rstrip(), " " + currency + " " + (low + "-" + high if low and high else low or high) + " / " + interval
+
+
+def render_entry(post, language, rich=False):
+    """Text of one job message. rich=True gives Telegram HTML with bold labels
+    (every job/company/AI string escaped); rich=False is the plain version."""
+    if not rich:
+        return _render_plain(post, language)
+    company = post["company"] or text("company_missing", language)
+    sal_label, sal_value = _salary_parts(post["salary_row"], language)
+    card = post.get("card")
+    warns = [_e(text("warn_" + w, language)) for w in warning_reasons(post)[:2]]
+    lines = [_b(f"* {post['title']} @ {company}")]
+    if post.get("location"):
+        lines.append(_b(text("card_location", language).rstrip()) + " " + _e(post["location"]))
+    lines.append(_b(sal_label) + _e(sal_value))
+    if card:
+        lines.append(_b(text("card_wants", language).rstrip()) + " " + _e(card["wants"]))
+        lines.append(_b(text("card_fit", language).rstrip()) + " " + _e(card["fit"]))
+    lines.extend(warns)
+    lines.append(_e(post["url"]))
+    if not card and post.get("ai_reason"):
+        lines.append(_b(text("ai_note", language).rstrip()) + " " + _e(post["ai_reason"]))
+    return "\n".join(lines)
+
+
+def _render_plain(post, language):
     """Text of one job message."""
     company = post["company"] or text("company_missing", language)
     salary = posted_salary(post["salary_row"], language)
@@ -344,7 +388,13 @@ def send_digest(chat_id, result, language):
             time.sleep(0.3)
             row_id = ids.get(post["url"])
             markup = kajkhoj_tracker.keyboard(row_id, text, language) if row_id else None
-            status = send(chat_id, render_entry(post, language)[:4000], markup)
+            rich = render_entry(post, language, rich=True)
+            status = 0
+            if len(rich) <= 4000:
+                status = send(chat_id, rich, markup, html_mode=True)
+            if status == 400 or len(rich) > 4000:
+                # Telegram rejected the formatting (nothing was sent): plain text, same buttons.
+                status = send(chat_id, render_entry(post, language)[:4000], markup)
             if status != 200:
                 return status, delivered
             delivered[kind].append(post)

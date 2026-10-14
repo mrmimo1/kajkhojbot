@@ -8,6 +8,7 @@ import re
 from kajkhoj_language import text, normalize_language
 from kajkhoj_ai import configured, explain, detail_cards
 import kajkhoj_sent
+from kajkhoj_safety import warning_reasons
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
@@ -291,6 +292,7 @@ def build_message(result, language="banglish"):
             company = post["company"] or text("company_missing", language)
             salary = posted_salary(post["salary_row"], language)
             card = post.get("card")
+            warns = [text("warn_" + w, language) for w in warning_reasons(post)[:2]]
             if card:
                 lines = [f"* {post['title']} @ {company}"]
                 if post.get("location"):
@@ -298,10 +300,11 @@ def build_message(result, language="banglish"):
                 lines.append(salary)
                 lines.append(text("card_wants", language) + card["wants"])
                 lines.append(text("card_fit", language) + card["fit"])
+                lines.extend(warns)
                 lines.append(post["url"])
                 entries.append("\n".join(lines))
                 continue
-            line = f"* {post['title']} @ {company}\n{salary}\n{post['url']}"
+            line = f"* {post['title']} @ {company}\n{salary}\n" + "".join(w + "\n" for w in warns) + post['url']
             if post.get("ai_reason"):
                 line += "\n" + text("ai_note", language) + post["ai_reason"]
             entries.append(line)
@@ -309,6 +312,8 @@ def build_message(result, language="banglish"):
             sections.append(text(kind, language) + "\n\n" + "\n\n".join(entries))
     if result["partial_failure"]:
         sections.append(text("partial", language))
+    if sections:
+        sections.append(text("safety_tip", language))
     return "\n\n".join(sections)
 
 

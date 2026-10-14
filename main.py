@@ -33,7 +33,7 @@ DB_HEADERS = {
 }
 
 
-def send(chat_id, msg, markup=None, _retry=True, html_mode=False):
+def send(chat_id, msg, markup=None, _retry=True, html_mode=False, message_info=None):
     """Send one Telegram message. Returns the HTTP status (0 on network error).
     Never prints the token or the chat id. markup = optional inline buttons.
     A 429 (rate limit) means nothing was sent, so waiting and retrying once is safe."""
@@ -51,11 +51,13 @@ def send(chat_id, msg, markup=None, _retry=True, html_mode=False):
             except Exception:
                 wait = 2
             time.sleep(min(max(wait, 1), 30))
-            return send(chat_id, msg, markup, _retry=False, html_mode=html_mode)
+            return send(chat_id, msg, markup, _retry=False, html_mode=html_mode, message_info=message_info)
         if r.status_code == 200:
             # A malformed response may conceal a successful send. Status 0 is ambiguous.
             try:
                 payload = r.json()
+                if message_info is not None and payload.get("ok"):
+                    message_info.append(payload.get("result", {}).get("message_id"))
                 return 200 if payload.get("ok") else int(payload.get("error_code") or 0)
             except (ValueError, TypeError, AttributeError):
                 return 0
@@ -390,14 +392,17 @@ def send_digest(chat_id, result, language):
             row_id = ids.get(post["url"])
             markup = kajkhoj_tracker.keyboard(row_id, text, language) if row_id else None
             rich = render_entry(post, language, rich=True)
+            message_info = []
             status = 0
             if len(rich) <= 4000:
-                status = send(chat_id, rich, markup, html_mode=True)
+                status = send(chat_id, rich, markup, html_mode=True, message_info=message_info)
             if status == 400 or len(rich) > 4000:
                 # Telegram rejected the formatting (nothing was sent): plain text, same buttons.
-                status = send(chat_id, render_entry(post, language)[:4000], markup)
+                status = send(chat_id, render_entry(post, language)[:4000], markup, message_info=message_info)
             if status != 200:
                 return status, delivered
+            if row_id and message_info and message_info[-1]:
+                kajkhoj_tracker.save_message(requests, SUPABASE_URL, DB_HEADERS, row_id["id"], message_info[-1])
             delivered[kind].append(post)
     time.sleep(0.3)
     status = send(chat_id, footer_text(result, language))

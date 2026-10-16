@@ -78,8 +78,8 @@ def score_job(job,profession,city):
     if not role_matches(title,profession):return Match(False,0,('title does not match user role',))
     reasons=['user role matched in title'];score=60
     remote=mode in {'remote','fully remote','work from home','wfh'} or bool(re.search(r'\bremote\b',location))
-    restricted=bool(re.search(r'\b(?:us only|usa only|uk only|europe only|canada only|must (?:reside|be based) in (?:the )?(?:us|usa|uk|canada))\b',location+' '+eligibility+' '+description))
-    eligible=bool(re.search(r'\b(?:india|worldwide|global|anywhere)\b',location+' '+eligibility))
+    restricted=bool(re.search(r'\b(?:us only|usa only|uk only|europe only|canada only|must (?:reside|be based) in (?:the )?(?:us|usa|uk|canada)|(?:united states|united kingdom|australia|germany|france) only)\b',location+' '+eligibility+' '+description))
+    eligible=bool(re.search(r'\b(?:india|worldwide|globally|global|anywhere)\b',location+' '+eligibility))
     if remote:
         if restricted:return Match(False,score,tuple(reasons+['remote restricted outside India']))
         if not eligible:return Match(False,score,tuple(reasons+['remote eligibility unknown']))

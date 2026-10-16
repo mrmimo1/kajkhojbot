@@ -3,7 +3,7 @@ import html
 import time
 import requests
 import pandas as pd
-from jobspy import scrape_jobs
+from kajkhoj_search import find_jobs, MAX_SEARCH_CALLS_PER_RUN
 from kajkhoj_filter import score_job, valid_preferences
 import re
 from kajkhoj_language import text, normalize_language
@@ -241,63 +241,6 @@ def add_detail_cards(result, user, budget):
     return updated
 
 
-def find_jobs(profession, city):
-    """Two cached search passes; evidence-filtered listings, no new platforms.
-    None means both scrapes failed. Partial results survive one failed pass.
-    """
-    base = re.sub(r"\b(?:freelance|freelancer|freelancing|gig|gigs|projects?)\b", "", profession, flags=re.I)
-    base = " ".join(base.split())
-    results = {"jobs": [], "freelance": [], "partial_failure": False, "ai_posts": []}
-    seen = set()
-    successful = 0
-    for term in [base, base + " freelance"]:
-        try:
-            jobs = scrape_jobs(
-                site_name=["indeed", "naukri", "google", "linkedin", "glassdoor"],
-                search_term=term,
-                google_search_term=f"{term} jobs near {city} since 3 days ago",
-                location=city,
-                results_wanted=10,
-                hours_old=72,
-                country_indeed="India",
-                fetch_description=True,  # LinkedIn search cards omit descriptions by default.
-            )
-            if jobs is None or (len(jobs) and ("job_url" not in jobs.columns or "title" not in jobs.columns)):
-                raise ValueError("scrape/schema unavailable")
-            successful += 1
-            if len(jobs):
-                for _, row in jobs.drop_duplicates(subset=["job_url"]).iterrows():
-                    job = row_to_job(row)
-                    if not score_job(job, profession, city).strong:
-                        continue
-                    url = field(row, "job_url")
-                    if not re.match(r"^https?://[^\s]+$", url) or url in seen:
-                        continue
-                    kind = "freelance" if freelance_signal(row) else "jobs"
-                    # Extra pass must not turn non-freelance results into more ordinary alerts.
-                    if term != base and kind != "freelance":
-                        continue
-                    limit = 5 if kind == "freelance" else 15
-                    if len(results[kind]) >= limit:
-                        continue
-                    result_index = len(results[kind])
-                    # Cache only listing facts; render labels separately for each user's language.
-                    results[kind].append({"title": job["title"], "company": field(row, "company"),
-                                          "location": job["location"],
-                                          "description": job["description"][:DETAIL_DESC_CHARS],
-                                          "salary_row": {name: field(row, name) for name in
-                                                         ("min_amount", "max_amount", "currency", "interval")},
-                                          "url": url})
-                    if len(results['ai_posts'])<3:
-                        results['ai_posts'].append({'kind':kind,'index':result_index,'title':job['title'][:180],'description':job['description'][:600]})
-                    seen.add(url)
-        except Exception as e:
-            results["partial_failure"] = True
-            print("scrape failed:", type(e).__name__)
-        time.sleep(2)
-    return results if successful else None
-
-
 def _b(s):
     """Bold one piece of text (escaped)."""
     return "<b>" + html.escape(str(s), quote=False) + "</b>"
@@ -326,6 +269,8 @@ def render_entry(post, language, rich=False):
     card = post.get("card")
     warns = [_e(text("warn_" + w, language)) for w in warning_reasons(post)[:2]]
     lines = [_b(f"* {post['title']} @ {company}")]
+    if post.get("source"):
+        lines.append(_e(text("source", language) + post["source"] + " | " + text("category_" + post.get("category", "local"), language)))
     if post.get("location"):
         lines.append(_b(text("card_location", language).rstrip()) + " " + _e(post["location"]))
     lines.append(_b(sal_label) + _e(sal_value))
@@ -343,6 +288,8 @@ def _render_plain(post, language):
     """Text of one job message."""
     company = post["company"] or text("company_missing", language)
     salary = posted_salary(post["salary_row"], language)
+    if post.get("source"):
+        salary = text("source", language) + post["source"] + " | " + text("category_" + post.get("category", "local"), language) + "\n" + salary
     card = post.get("card")
     warns = [text("warn_" + w, language) for w in warning_reasons(post)[:2]]
     if card:
@@ -438,6 +385,8 @@ def main():
     print("mode:", MODE, "| users:", len(users))
     cache = {}
     detail_budget = [DETAIL_MAX_CALLS_PER_RUN]
+    search_budget = [MAX_SEARCH_CALLS_PER_RUN]
+    paused_sources = set()
     sent = 0
     skipped = 0
     kajkhoj_sent.cleanup_old(requests, SUPABASE_URL, DB_HEADERS)
@@ -459,7 +408,7 @@ def main():
 
         key = (profession.lower(), city.lower())
         if key not in cache:
-            cache[key] = find_jobs(profession, city)
+            cache[key] = find_jobs(profession, city, search_budget, paused_sources)
         lines = cache[key]
         raw_had_jobs = bool(lines and (lines["jobs"] or lines["freelance"]))
         if lines is not None:
@@ -468,7 +417,9 @@ def main():
             blocked = kajkhoj_tracker.blocked_keys(requests, SUPABASE_URL, DB_HEADERS, chat_id)
             if seen is not None and blocked:
                 seen = seen | blocked  # Applied / Not interested jobs never come back
+            before = len(lines["jobs"]) + len(lines["freelance"])
             lines = kajkhoj_sent.filter_new(lines, seen)
+            print("user-filter counts: before", before, "after", len(lines["jobs"]) + len(lines["freelance"]))
 
         if lines is None:
             status = send(chat_id, text("error", language)) # one attempt only

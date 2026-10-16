@@ -5,6 +5,10 @@ LANGUAGES = {"banglish": "simple Banglish (Bengali + English, Latin letters)",
 
 TEXT = {
  "banglish": {
+  "source": "Kotha theke: ",
+  "category_local": "Tomar city-r job",
+  "category_remote": "Remote job (India ba sara duniya theke kajer kotha ache)",
+  "category_freelance": "Freelance kaj ba project-er lead",
   "fu_head": "Je job-e apply korechile, tar chhoto follow-up:",
   "fu_call": "Interview-er jonno call ba reply esheche?",
   "fu_interview": "Interview hoyeche?",
@@ -41,6 +45,10 @@ TEXT = {
   "card_fit": "Keno tomar jonno match: ",
  },
  "english": {
+  "source": "Source: ",
+  "category_local": "Local job",
+  "category_remote": "Remote job (India/worldwide eligibility stated)",
+  "category_freelance": "Freelance role or project lead",
   "fu_head": "Quick follow-up on a job you applied to:",
   "fu_call": "Did you get a call or reply for an interview?",
   "fu_interview": "Has the interview happened?",
@@ -77,6 +85,10 @@ TEXT = {
   "card_fit": "Why it fits you: ",
  },
  "hinglish": {
+  "source": "Kahan se: ",
+  "category_local": "Tumhari city ki job",
+  "category_remote": "Remote job (India ya duniya bhar se kaam ki baat hai)",
+  "category_freelance": "Freelance kaam ya project ki lead",
   "fu_head": "Jis job par apply kiya tha, uska chhota follow-up:",
   "fu_call": "Interview ke liye call ya reply aaya?",
   "fu_interview": "Interview ho gaya?",

@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from jobspy import scrape_jobs
 from kajkhoj_filter import score_job, role_matches
 
-SOURCES = ('indeed', 'naukri', 'google', 'linkedin', 'glassdoor')
+# Google Jobs removed 2026-10-24: upstream JobSpy can no longer read Google
+# (Google serves Jobs only to JS browsers; speedyapply/JobSpy issue #284, still open).
+# Every Google query returned 0 rows and logged ERROR, which tripped the daily
+# "source search failed" warning even though all working sources were fine.
+# Re-add 'google' here when upstream issue #284 is fixed.
+SOURCES = ('indeed', 'naukri', 'linkedin', 'glassdoor')
 REMOTE_KEYWORDS = ('remote', 'work from home', 'WFH', 'fully remote', 'home based', 'work from anywhere', 'remote consultant', 'remote part time')
 FREELANCE_KEYWORDS = ('freelance', 'freelancer', 'project based', 'contract', 'consultant', 'part time', 'independent contractor', 'short term project', 'freelance services', 'project work')
 ROLE_QUERIES = {
@@ -98,13 +103,19 @@ def query_plan(profession,city):
 
 def find_jobs(profession,city,budget,paused=None):
     found={k:{s:[] for s in SOURCES} for k in ('jobs','freelance')}
-    partial=False;success=0
+    # Per-source health, decided after all queries: a source "failed" only when
+    # NONE of its queries worked (exception, errors with 0 rows, or throttled
+    # before any success). A source that delivered rows and only later hit a
+    # 429 still counts as working, so one hiccup in a 14-query plan no longer
+    # trips the daily warning; a genuinely dead source still does.
+    state={s:{'ok':False,'failed':False} for s in SOURCES}
+    budget_hit=False;success=0
     if paused is None: paused=set()
     for source,kind,term,location,remote,hours in query_plan(profession,city):
         if source in paused:
-            partial=True; print('search:',source,kind,'skipped after throttling');continue
+            state[source]['failed']=True; print('search:',source,kind,'skipped after throttling');continue
         if budget[0]<=0:
-            partial=True; print('search: run budget reached');break
+            budget_hit=True; print('search: run budget reached');break
         budget[0]-=1
         logger=logging.getLogger('JobSpy:'+{'linkedin':'LinkedIn'}.get(source,source.capitalize()))
         errors=_Errors();logger.addHandler(errors)
@@ -133,15 +144,22 @@ def find_jobs(profession,city,budget,paused=None):
                           'description':job['description'][:DESC_CHARS],'salary_row':{k:_field(row,k) for k in ('min_amount','max_amount','currency','interval')},
                           'url':url,'source':source,'category':category}
                     found['freelance' if is_freelance else 'jobs'][source].append(post);kept+=1
-            if errors.count or errors.throttled:partial=True
+            if raw>0:
+                state[source]['ok']=True        # delivered rows, noise or not
+            elif errors.count or errors.throttled:
+                state[source]['failed']=True    # nothing back AND it errored
+            else:
+                state[source]['ok']=True        # healthy, just no jobs
             if errors.throttled:
                 paused.add(source); print('search:',source,'throttled; remaining source queries skipped')
         except Exception as e:
-            partial=True; print('search exception:',source,kind,type(e).__name__)
+            state[source]['failed']=True; print('search exception:',source,kind,type(e).__name__)
         finally:
             logger.removeHandler(errors)
         print('search:',source,kind,'rows',raw,'accepted',kept,'errors',errors.count,'rejects',dict(rejects),'seconds',round(time.monotonic()-started,1))
         time.sleep(1)
+    partial=budget_hit or any(state[s]['failed'] and not state[s]['ok'] for s in SOURCES)
+    print('search health:', {s:('ok' if state[s]['ok'] else 'FAILED' if state[s]['failed'] else 'no jobs') for s in SOURCES})
     jobs=_balanced(found['jobs'],MAX_JOBS);gigs=_balanced(found['freelance'],MAX_FREELANCE)
     # Remove any duplicate URLs across sections.
     used={p['url'] for p in jobs};gigs=[p for p in gigs if p['url'] not in used]
